@@ -12,7 +12,8 @@ from bs4 import BeautifulSoup
 URL = "https://transparencia.caxias.ma.gov.br/transparencia/licitacoes/processos"
 ESTADO = Path(__file__).parent / "vistos.json"
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+# Pode ter vários IDs separados por vírgula. Ex: "123456789,987654321"
+CHAT_IDS = [c.strip() for c in os.environ.get("TELEGRAM_CHAT_ID", "").split(",") if c.strip()]
 # Opcional: palavras separadas por vírgula. Ex: "combustível,informática,obra"
 # Vazio = avisa de todas as licitações novas.
 PALAVRAS = [p.strip().lower() for p in os.environ.get("KEYWORDS", "").split(",") if p.strip()]
@@ -36,21 +37,37 @@ def baixar_lista():
 
 
 def enviar(msg):
-    r = requests.post(
-        f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": msg, "disable_web_page_preview": "true"},
-        timeout=30,
-    )
-    r.raise_for_status()
+    ok = 0
+    for chat_id in CHAT_IDS:
+        try:
+            r = requests.post(
+                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                data={"chat_id": chat_id, "text": msg, "disable_web_page_preview": "true"},
+                timeout=30,
+            )
+            r.raise_for_status()
+            ok += 1
+        except requests.RequestException as e:
+            print(f"Falha ao enviar para {chat_id}: {e}")
+    if ok == 0:
+        raise RuntimeError("Não foi possível enviar para ninguém.")
 
 
 def main():
-    if not TOKEN or not CHAT_ID:
+    if not TOKEN or not CHAT_IDS:
         sys.exit("Defina TELEGRAM_TOKEN e TELEGRAM_CHAT_ID.")
 
     itens = baixar_lista()
     if not itens:
         sys.exit("Nenhuma licitação encontrada: o site pode ter mudado de layout.")
+
+    if os.environ.get("TESTE") == "1":
+        lic_id = max(itens, key=int)
+        item = itens[lic_id]
+        enviar(f"🧪 TESTE - é assim que uma licitação nova aparece:\n\n"
+               f"🆕 Nova licitação (Caxias-MA)\n\n{item['texto']}\n\n🔗 {item['link']}")
+        print("Mensagem de teste enviada.")
+        return
 
     primeira_vez = not ESTADO.exists()
     vistos = set(json.loads(ESTADO.read_text())) if not primeira_vez else set()
