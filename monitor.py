@@ -29,6 +29,7 @@ PNCP_UFS = [u.strip().upper() for u in (os.environ.get("PNCP_UF") or "MA,TO,PI,C
 # 6 Pregão eletr., 7 Pregão pres., 8 Dispensa, 9 Inexigibilidade, 12 Credenciamento...
 PNCP_MODALIDADES = [int(m) for m in (os.environ.get("PNCP_MODALIDADES") or "4,5,6,7").split(",") if m.strip()]
 PNCP_DIAS = int(os.environ.get("PNCP_DIAS") or 2)        # janela de publicação consultada
+PNCP_INTERVALO = int(os.environ.get("PNCP_INTERVALO") or 10)  # minutos entre consultas ao PNCP (nas execuções agendadas)
 MAX_ENVIO = int(os.environ.get("MAX_ENVIO") or 25)       # limite de mensagens por rodada/fonte
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (monitor-licitacoes; uso pessoal)"}
@@ -36,17 +37,30 @@ BRT = timezone(timedelta(hours=-3))
 
 
 # ---------------------------------------------------------------- utilidades
+class LimiteRitmo(Exception):
+    """O site respondeu 429 (excesso de requisições)."""
+
+
 def get_retry(url, params=None, tentativas=3):
     erro = None
     for i in range(tentativas):
+        espera = 5 * (i + 1)
         try:
             r = requests.get(url, params=params, headers=HEADERS, timeout=60)
-            if r.status_code < 500:
+            if r.status_code == 429:
+                erro = LimiteRitmo("HTTP 429 - limite de requisições do site")
+                try:
+                    espera = min(int(r.headers.get("Retry-After", espera)), 60)
+                except ValueError:
+                    pass
+            elif r.status_code >= 500:
+                erro = RuntimeError(f"HTTP {r.status_code} em {url.split('?')[0]}")
+            else:
                 return r
-            erro = RuntimeError(f"HTTP {r.status_code} em {url}")
         except requests.RequestException as e:
             erro = e
-        time.sleep(3 * (i + 1))
+        if i < tentativas - 1:
+            time.sleep(espera)
     raise erro
 
 
@@ -166,6 +180,7 @@ def fonte_caxias():
 # ------------------------------------------------------------- fonte 2: PNCP
 PNCP_API = "https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao"
 PNCP_ESTADO = BASE / "vistos_pncp.json"
+PNCP_ERROS = {}  # uf -> último erro (para o modo teste explicar)
 
 
 def pncp_buscar():
@@ -174,8 +189,17 @@ def pncp_buscar():
     ini = (hoje - timedelta(days=PNCP_DIAS - 1)).strftime("%Y%m%d")
     fim = hoje.strftime("%Y%m%d")
     achados, falhas = {}, set()
-    for uf in PNCP_UFS:
+    # gira a ordem dos estados a cada rodada, para nenhum ficar sempre por último
+    rot = int(time.time() // 300) % len(PNCP_UFS)
+    ordem = PNCP_UFS[rot:] + PNCP_UFS[:rot]
+    bloqueado = False
+    for uf in ordem:
+        if bloqueado:  # o PNCP já mandou parar: não insiste, tenta na próxima rodada
+            falhas.add(uf)
+            PNCP_ERROS.setdefault(uf, "limite de requisições do PNCP (429)")
+            continue
         for modalidade in PNCP_MODALIDADES:
+            time.sleep(1.5)  # ritmo mais lento para respeitar o limite do PNCP
             try:
                 pagina = 1
                 while True:
@@ -193,10 +217,18 @@ def pncp_buscar():
                     if pagina >= int(j.get("totalPaginas") or 1):
                         break
                     pagina += 1
-                    time.sleep(0.5)
+                    time.sleep(1.5)
+            except LimiteRitmo as e:
+                print(f"[PNCP] limite de requisições atingido em {uf}/modalidade {modalidade}; "
+                      f"pausando as consultas desta rodada.")
+                falhas.add(uf)
+                PNCP_ERROS.setdefault(uf, "limite de requisições do PNCP (429)")
+                bloqueado = True
+                break
             except Exception as e:
                 print(f"[PNCP] falha em {uf}/modalidade {modalidade}: {limpar(e)}")
                 falhas.add(uf)
+                PNCP_ERROS.setdefault(uf, limpar(e))
     return achados, falhas
 
 
@@ -238,19 +270,32 @@ def pncp_carregar_estado():
     return e
 
 
+def pncp_deve_rodar():
+    """Nas execuções agendadas, consulta o PNCP só a cada PNCP_INTERVALO minutos."""
+    if TESTE or os.environ.get("GITHUB_EVENT_NAME") != "schedule":
+        return True
+    return datetime.now(BRT).minute % PNCP_INTERVALO < 5
+
+
 def fonte_pncp():
+    if not pncp_deve_rodar():
+        print("[PNCP] pulando esta rodada (intervalo entre consultas).")
+        return
     achados, falhas = pncp_buscar()
     ordenados = sorted(achados.values(), key=lambda x: x.get("dataPublicacaoPncp") or "")
 
     if TESTE:
-        enviou = False
+        sem = []
         for uf in PNCP_UFS:
             do_uf = [x for x in ordenados if x["_uf"] == uf]
             if do_uf:
                 enviar(pncp_msg(do_uf[-1], "🧪 TESTE - é assim que aparece:\n\n"))
-                enviou = True
-        if not enviou:
-            enviar("🧪 TESTE PNCP: nenhuma licitação encontrada na janela consultada.")
+            elif uf in falhas:
+                sem.append(f"{uf}: a consulta ao PNCP falhou ({PNCP_ERROS.get(uf, 'erro')})")
+            else:
+                sem.append(f"{uf}: nenhuma licitação nos últimos {PNCP_DIAS} dias nas modalidades {PNCP_MODALIDADES}")
+        if sem:
+            enviar("🧪 TESTE PNCP - estados sem exemplo:\n" + "\n".join(f"• {l}" for l in sem))
         return
 
     if falhas and not achados:
