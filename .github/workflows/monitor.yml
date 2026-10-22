@@ -37,6 +37,7 @@ jobs:
           PNCP_UF: ${{ vars.PNCP_UF }}
           PNCP_MODALIDADES: ${{ vars.PNCP_MODALIDADES }}
           PNCP_DIAS: ${{ vars.PNCP_DIAS }}
+          PNCP_INTERVALO: ${{ vars.PNCP_INTERVALO }}
           MAX_ENVIO: ${{ vars.MAX_ENVIO }}
         run: python monitor.py
       - name: Salvar estado
