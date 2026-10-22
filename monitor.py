@@ -111,7 +111,8 @@ def enviar(msg):
 
 def passa_filtro(texto):
     texto = sem_acento(texto)
-    return not PALAVRAS or any(p in texto for p in PALAVRAS)
+    # palavra inteira (aceita plural): "ovos" não casa com "novos", "trave" não casa com "através"
+    return not PALAVRAS or any(re.search(r"\b" + re.escape(p) + r"s?\b", texto) for p in PALAVRAS)
 
 
 def ler_json(caminho, padrao):
