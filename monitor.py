@@ -30,7 +30,7 @@ PNCP_UFS = [u.strip().upper() for u in (os.environ.get("PNCP_UF") or "MA,TO,PI,C
 PNCP_MODALIDADES = [int(m) for m in (os.environ.get("PNCP_MODALIDADES") or "4,5,6,7").split(",") if m.strip()]
 PNCP_DIAS = int(os.environ.get("PNCP_DIAS") or 2)        # janela de publicação consultada
 PNCP_INTERVALO = int(os.environ.get("PNCP_INTERVALO") or 0)  # minutos entre consultas ao PNCP (nas execuções agendadas)
-MAX_ENVIO = int(os.environ.get("MAX_ENVIO") or 25)       # limite de mensagens por rodada/fonte
+MAX_ENVIO = int(os.environ.get("MAX_ENVIO") or 15)       # limite de mensagens por rodada/fonte
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (monitor-licitacoes; uso pessoal)"}
 BRT = timezone(timedelta(hours=-3))
@@ -76,16 +76,30 @@ def limpar(texto):
 def enviar(msg):
     ok = 0
     for chat_id in CHAT_IDS:
-        try:
-            r = requests.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                data={"chat_id": chat_id, "text": msg[:4000], "disable_web_page_preview": "true"},
-                timeout=30,
-            )
-            r.raise_for_status()
-            ok += 1
-        except requests.RequestException as e:
-            print(f"Falha ao enviar para um destino: {limpar(e)}")
+        for tentativa in range(4):
+            try:
+                r = requests.post(
+                    f"https://api.telegram.org/bot{TOKEN}/sendMessage",
+                    data={"chat_id": chat_id, "text": msg[:4000], "disable_web_page_preview": "true"},
+                    timeout=30,
+                )
+                if r.status_code == 429:  # limite de ritmo do Telegram: espera o tempo pedido
+                    try:
+                        espera = int(r.json().get("parameters", {}).get("retry_after", 5))
+                    except Exception:
+                        espera = 5
+                    if espera > 60:
+                        raise RuntimeError(f"Telegram pediu espera de {espera}s")
+                    time.sleep(espera + 1)
+                    continue
+                r.raise_for_status()
+                ok += 1
+                break
+            except RuntimeError:
+                raise
+            except requests.RequestException as e:
+                print(f"Falha ao enviar para um destino: {limpar(e)}")
+                break
     if ok == 0:
         raise RuntimeError("Não foi possível enviar para ninguém.")
 
@@ -172,7 +186,7 @@ def fonte_caxias():
         vistos.add(lic_id)
         enviados += 1
         CAXIAS_ESTADO.write_text(json.dumps(sorted(vistos, key=int)))
-        time.sleep(1)
+        time.sleep(3)
     CAXIAS_ESTADO.write_text(json.dumps(sorted(vistos, key=int)))
     print(f"[Caxias] {len(novos)} novas, {enviados} enviadas.")
 
@@ -331,11 +345,15 @@ def fonte_pncp():
             continue
         if enviados >= MAX_ENVIO:
             break  # o restante sai na próxima rodada
-        enviar(pncp_msg(x))
+        try:
+            enviar(pncp_msg(x))
+        except RuntimeError as e:
+            print(f"[PNCP] envio interrompido ({limpar(e)}); o restante sai na próxima rodada.")
+            break
         ids[cid] = hoje.isoformat()
         enviados += 1
         salvar()
-        time.sleep(1)
+        time.sleep(3)
 
     limite = (hoje - timedelta(days=20)).isoformat()  # limpa registros antigos
     estado["ids"] = {k: v for k, v in ids.items() if v >= limite}
