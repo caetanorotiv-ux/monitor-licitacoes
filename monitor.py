@@ -50,6 +50,15 @@ def get_retry(url, params=None, tentativas=3):
     raise erro
 
 
+def limpar(texto):
+    """Nunca deixa o token nem IDs de chat aparecerem nos logs (repositório público)."""
+    texto = str(texto)
+    for segredo in [TOKEN] + CHAT_IDS:
+        if segredo:
+            texto = texto.replace(segredo, "***")
+    return texto
+
+
 def enviar(msg):
     ok = 0
     for chat_id in CHAT_IDS:
@@ -62,7 +71,7 @@ def enviar(msg):
             r.raise_for_status()
             ok += 1
         except requests.RequestException as e:
-            print(f"Falha ao enviar para {chat_id}: {e}")
+            print(f"Falha ao enviar para um destino: {limpar(e)}")
     if ok == 0:
         raise RuntimeError("Não foi possível enviar para ninguém.")
 
@@ -262,7 +271,7 @@ def main():
         try:
             fonte()
         except Exception as e:  # uma fonte com problema não derruba a outra
-            print(f"[{nome}] ERRO: {e}")
+            print(f"[{nome}] ERRO: {limpar(e)}")
             erros.append(nome)
     if erros:
         sys.exit(1)
