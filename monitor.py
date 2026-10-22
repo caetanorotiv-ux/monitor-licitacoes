@@ -29,7 +29,7 @@ PNCP_UFS = [u.strip().upper() for u in (os.environ.get("PNCP_UF") or "MA,TO,PI,C
 # 6 Pregão eletr., 7 Pregão pres., 8 Dispensa, 9 Inexigibilidade, 12 Credenciamento...
 PNCP_MODALIDADES = [int(m) for m in (os.environ.get("PNCP_MODALIDADES") or "4,5,6,7").split(",") if m.strip()]
 PNCP_DIAS = int(os.environ.get("PNCP_DIAS") or 2)        # janela de publicação consultada
-PNCP_INTERVALO = int(os.environ.get("PNCP_INTERVALO") or 10)  # minutos entre consultas ao PNCP (nas execuções agendadas)
+PNCP_INTERVALO = int(os.environ.get("PNCP_INTERVALO") or 0)  # minutos entre consultas ao PNCP (nas execuções agendadas)
 MAX_ENVIO = int(os.environ.get("MAX_ENVIO") or 25)       # limite de mensagens por rodada/fonte
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (monitor-licitacoes; uso pessoal)"}
@@ -271,9 +271,9 @@ def pncp_carregar_estado():
 
 
 def pncp_deve_rodar():
-    """Nas execuções agendadas, consulta o PNCP só a cada PNCP_INTERVALO minutos."""
-    if TESTE or os.environ.get("GITHUB_EVENT_NAME") != "schedule":
-        return True
+    """Só limita o PNCP se PNCP_INTERVALO > 5 for definido; por padrão consulta sempre."""
+    if TESTE or PNCP_INTERVALO <= 5 or os.environ.get("GITHUB_EVENT_NAME") != "schedule":
+        return True  # padrão: sempre consulta
     return datetime.now(BRT).minute % PNCP_INTERVALO < 5
 
 
