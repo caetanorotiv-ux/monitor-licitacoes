@@ -24,7 +24,7 @@ PALAVRAS = [p.strip().lower() for p in os.environ.get("KEYWORDS", "").split(",")
 TESTE = os.environ.get("TESTE") == "1"
 
 # --- PNCP ---
-PNCP_UF = (os.environ.get("PNCP_UF") or "MA").strip().upper()
+PNCP_UFS = [u.strip().upper() for u in (os.environ.get("PNCP_UF") or "MA,TO,PI,CE").split(",") if u.strip()]
 # 1 Leilão eletr., 2 Diálogo comp., 3 Concurso, 4 Concorrência eletr., 5 Concorrência pres.,
 # 6 Pregão eletr., 7 Pregão pres., 8 Dispensa, 9 Inexigibilidade, 12 Credenciamento...
 PNCP_MODALIDADES = [int(m) for m in (os.environ.get("PNCP_MODALIDADES") or "4,5,6,7").split(",") if m.strip()]
@@ -169,28 +169,35 @@ PNCP_ESTADO = BASE / "vistos_pncp.json"
 
 
 def pncp_buscar():
+    """Retorna (achados, falhas). achados: {id: licitação}; falhas: UFs com erro de consulta."""
     hoje = datetime.now(BRT).date()
     ini = (hoje - timedelta(days=PNCP_DIAS - 1)).strftime("%Y%m%d")
     fim = hoje.strftime("%Y%m%d")
-    achados = {}
-    for modalidade in PNCP_MODALIDADES:
-        pagina = 1
-        while True:
-            params = {"dataInicial": ini, "dataFinal": fim, "codigoModalidadeContratacao": modalidade,
-                      "uf": PNCP_UF, "pagina": pagina, "tamanhoPagina": 50}
-            r = get_retry(PNCP_API, params)
-            if r.status_code == 204 or not r.content:
-                break
-            r.raise_for_status()
-            j = r.json()
-            for x in j.get("data") or []:
-                if x.get("numeroControlePNCP"):
-                    achados[x["numeroControlePNCP"]] = x
-            if pagina >= int(j.get("totalPaginas") or 1):
-                break
-            pagina += 1
-            time.sleep(0.5)
-    return achados
+    achados, falhas = {}, set()
+    for uf in PNCP_UFS:
+        for modalidade in PNCP_MODALIDADES:
+            try:
+                pagina = 1
+                while True:
+                    params = {"dataInicial": ini, "dataFinal": fim, "codigoModalidadeContratacao": modalidade,
+                              "uf": uf, "pagina": pagina, "tamanhoPagina": 50}
+                    r = get_retry(PNCP_API, params)
+                    if r.status_code == 204 or not r.content:
+                        break
+                    r.raise_for_status()
+                    j = r.json()
+                    for x in j.get("data") or []:
+                        if x.get("numeroControlePNCP"):
+                            x["_uf"] = uf
+                            achados[x["numeroControlePNCP"]] = x
+                    if pagina >= int(j.get("totalPaginas") or 1):
+                        break
+                    pagina += 1
+                    time.sleep(0.5)
+            except Exception as e:
+                print(f"[PNCP] falha em {uf}/modalidade {modalidade}: {limpar(e)}")
+                falhas.add(uf)
+    return achados, falhas
 
 
 def pncp_texto_busca(x):
@@ -202,6 +209,7 @@ def pncp_texto_busca(x):
 def pncp_msg(x, prefixo=""):
     org = x.get("orgaoEntidade") or {}
     uni = x.get("unidadeOrgao") or {}
+    uf = uni.get("ufSigla") or x.get("_uf", "")
     controle = x.get("numeroControlePNCP", "")
     m = re.match(r"(\d{14})-\d-(\d+)/(\d{4})", controle)
     link = f"https://pncp.gov.br/app/editais/{m.group(1)}/{m.group(3)}/{int(m.group(2))}" if m else "https://pncp.gov.br"
@@ -209,9 +217,9 @@ def pncp_msg(x, prefixo=""):
     if len(objeto) > 600:
         objeto = objeto[:600] + "…"
     return (
-        f"{prefixo}🆕 Nova licitação - PNCP ({PNCP_UF})\n\n"
+        f"{prefixo}🆕 Nova licitação - PNCP ({uf})\n\n"
         f"🏛 {org.get('razaoSocial','-')}\n"
-        f"📍 {uni.get('municipioNome','-')}/{uni.get('ufSigla', PNCP_UF)}\n"
+        f"📍 {uni.get('municipioNome','-')}/{uf}\n"
         f"📋 {x.get('modalidadeNome','-')} nº {x.get('numeroCompra','-')}/{x.get('anoCompra','-')}\n\n"
         f"📝 {objeto}\n\n"
         f"💰 {br_valor(x.get('valorTotalEstimado'))}\n"
@@ -221,45 +229,73 @@ def pncp_msg(x, prefixo=""):
     )
 
 
+def pncp_carregar_estado():
+    e = ler_json(PNCP_ESTADO, None)
+    if e is None:
+        return {"ufs": [], "ids": {}}
+    if "ids" not in e:  # formato antigo: só MA, sem lista de estados
+        return {"ufs": ["MA"], "ids": e}
+    return e
+
+
 def fonte_pncp():
-    achados = pncp_buscar()
+    achados, falhas = pncp_buscar()
     ordenados = sorted(achados.values(), key=lambda x: x.get("dataPublicacaoPncp") or "")
 
     if TESTE:
-        if ordenados:
-            enviar(pncp_msg(ordenados[-1], "🧪 TESTE - é assim que aparece:\n\n"))
-        else:
+        enviou = False
+        for uf in PNCP_UFS:
+            do_uf = [x for x in ordenados if x["_uf"] == uf]
+            if do_uf:
+                enviar(pncp_msg(do_uf[-1], "🧪 TESTE - é assim que aparece:\n\n"))
+                enviou = True
+        if not enviou:
             enviar("🧪 TESTE PNCP: nenhuma licitação encontrada na janela consultada.")
         return
 
-    hoje = datetime.now(BRT).date()
-    vistos = ler_json(PNCP_ESTADO, None)  # dict {id: data}
+    if falhas and not achados:
+        raise RuntimeError(f"PNCP: consulta falhou para {', '.join(sorted(falhas))}.")
 
-    if vistos is None:
-        PNCP_ESTADO.write_text(json.dumps({k: hoje.isoformat() for k in achados}))
-        enviar(f"✅ PNCP ativado ({PNCP_UF}). {len(achados)} licitações dos últimos {PNCP_DIAS} dias "
-               f"foram registradas. A partir de agora você só recebe as novas.")
-        return
+    hoje = datetime.now(BRT).date()
+    estado = pncp_carregar_estado()
+    ids = estado["ids"]
+
+    def salvar():
+        PNCP_ESTADO.write_text(json.dumps(estado))
+
+    # Estados novos: registra o que já existe SEM enviar (evita inundar o grupo)
+    novas_ufs = [u for u in PNCP_UFS if u not in estado["ufs"] and u not in falhas]
+    if novas_ufs:
+        qtd = 0
+        for x in ordenados:
+            if x["_uf"] in novas_ufs and x["numeroControlePNCP"] not in ids:
+                ids[x["numeroControlePNCP"]] = hoje.isoformat()
+                qtd += 1
+        estado["ufs"] += novas_ufs
+        salvar()
+        enviar(f"✅ PNCP ativado para {', '.join(novas_ufs)}. {qtd} licitações dos últimos "
+               f"{PNCP_DIAS} dias foram registradas. A partir de agora você só recebe as novas.")
 
     enviados = 0
-    novos = [x for x in ordenados if x["numeroControlePNCP"] not in vistos]
+    novos = [x for x in ordenados
+             if x["_uf"] in estado["ufs"] and x["numeroControlePNCP"] not in ids]
     for x in novos:
         cid = x["numeroControlePNCP"]
         if not passa_filtro(pncp_texto_busca(x)):
-            vistos[cid] = hoje.isoformat()
+            ids[cid] = hoje.isoformat()
             continue
         if enviados >= MAX_ENVIO:
-            break
+            break  # o restante sai na próxima rodada
         enviar(pncp_msg(x))
-        vistos[cid] = hoje.isoformat()
+        ids[cid] = hoje.isoformat()
         enviados += 1
-        PNCP_ESTADO.write_text(json.dumps(vistos))
+        salvar()
         time.sleep(1)
 
     limite = (hoje - timedelta(days=20)).isoformat()  # limpa registros antigos
-    vistos = {k: v for k, v in vistos.items() if v >= limite}
-    PNCP_ESTADO.write_text(json.dumps(vistos))
-    print(f"[PNCP] {len(novos)} novas, {enviados} enviadas.")
+    estado["ids"] = {k: v for k, v in ids.items() if v >= limite}
+    salvar()
+    print(f"[PNCP] {len(novos)} novas, {enviados} enviadas. Falhas: {sorted(falhas) or 'nenhuma'}")
 
 
 # ------------------------------------------------------------------------ main
