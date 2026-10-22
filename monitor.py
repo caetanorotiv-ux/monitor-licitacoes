@@ -5,6 +5,7 @@ Fontes:
   2. PNCP - Portal Nacional de Contratações Públicas (filtrado por UF, padrão MA)
 """
 import json
+import unicodedata
 import os
 import re
 import sys
@@ -20,7 +21,11 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 # Vários IDs separados por vírgula. Ex: "123456789,-1001234567890"
 CHAT_IDS = [c.strip() for c in os.environ.get("TELEGRAM_CHAT_ID", "").split(",") if c.strip()]
 # Palavras-chave opcionais (vírgula). Vazio = avisa tudo.
-PALAVRAS = [p.strip().lower() for p in os.environ.get("KEYWORDS", "").split(",") if p.strip()]
+def sem_acento(t):
+    return "".join(c for c in unicodedata.normalize("NFD", str(t).lower()) if unicodedata.category(c) != "Mn")
+
+
+PALAVRAS = [sem_acento(p.strip()) for p in os.environ.get("KEYWORDS", "").split(",") if p.strip()]
 TESTE = os.environ.get("TESTE") == "1"
 
 # --- PNCP ---
@@ -105,7 +110,8 @@ def enviar(msg):
 
 
 def passa_filtro(texto):
-    return not PALAVRAS or any(p in texto.lower() for p in PALAVRAS)
+    texto = sem_acento(texto)
+    return not PALAVRAS or any(p in texto for p in PALAVRAS)
 
 
 def ler_json(caminho, padrao):
