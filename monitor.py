@@ -27,6 +27,8 @@ def sem_acento(t):
 
 PALAVRAS = [sem_acento(p.strip()) for p in os.environ.get("KEYWORDS", "").split(",") if p.strip()]
 TESTE = os.environ.get("TESTE") == "1"
+# Modo retroativo: preenche o MAPA com as licitações dos últimos N dias, sem enviar nada ao Telegram
+RETRO = int(os.environ.get("MAPA_RETRO") or 0)
 
 # --- PNCP ---
 PNCP_UFS = [u.strip().upper() for u in (os.environ.get("PNCP_UF") or "MA,TO,PI,CE").split(",") if u.strip()]
@@ -155,21 +157,46 @@ def temas_de(texto):
     return [tema for tema, ps in TEMAS.items() if any(re.search(r"\b" + re.escape(p) + r"s?\b", t) for p in ps)]
 
 
-def registrar(rec):
-    """Guarda a licitação enviada em docs/data.json (alimenta a página do mapa)."""
+def registrar(rec, quando=None):
+    """Guarda a licitação em docs/data.json (alimenta a página do mapa).
+    quando: data real da publicação (modo retroativo). Sem ela, usa o momento do envio."""
     try:
         dados = ler_json(MAPA_DADOS, {"itens": []})
+        if quando and any(i.get("id") == rec["id"] for i in dados.get("itens", [])):
+            return False  # já está no mapa; mantém o registro original
         itens = [i for i in dados.get("itens", []) if i.get("id") != rec["id"]]
-        rec["enviado"] = datetime.now(BRT).isoformat(timespec="seconds")
+        rec["enviado"] = quando or datetime.now(BRT).isoformat(timespec="seconds")
         rec["temas"] = temas_de(rec.get("objeto", ""))
         itens.insert(0, rec)
         limite = (datetime.now(BRT) - timedelta(days=MAPA_DIAS)).isoformat()
         itens = [i for i in itens if i.get("enviado", "") >= limite][:MAPA_MAX]
         MAPA_DADOS.parent.mkdir(exist_ok=True)
-        MAPA_DADOS.write_text(json.dumps({"atualizado": rec["enviado"], "itens": itens},
+        MAPA_DADOS.write_text(json.dumps({"atualizado": datetime.now(BRT).isoformat(timespec="seconds"), "itens": itens},
                                          ensure_ascii=False, separators=(",", ":")))
+        return True
     except Exception as e:  # o mapa nunca pode derrubar o monitor
         print(f"[mapa] não foi possível registrar: {limpar(e)}")
+        return False
+
+
+def rec_caxias(lic_id, item):
+    return {"id": f"CAXIAS-{lic_id}", "fonte": "Prefeitura de Caxias", "uf": "MA",
+            "municipio": "Caxias", "ibge": "2103000", "orgao": "Prefeitura Municipal de Caxias",
+            "objeto": item["texto"][:400], "modalidade": "", "valor": None,
+            "publicacao": "", "link": item["link"]}
+
+
+def rec_pncp(x):
+    org, uni = x.get("orgaoEntidade") or {}, x.get("unidadeOrgao") or {}
+    cid = x.get("numeroControlePNCP", "")
+    m = re.match(r"(\d{14})-\d-(\d+)/(\d{4})", cid)
+    return {"id": cid, "fonte": "PNCP", "uf": uni.get("ufSigla") or x.get("_uf", ""),
+            "municipio": uni.get("municipioNome", ""), "ibge": str(uni.get("codigoIbge") or ""),
+            "orgao": org.get("razaoSocial", ""),
+            "objeto": re.sub(r"\s+", " ", x.get("objetoCompra") or "").strip()[:400],
+            "modalidade": f"{x.get('modalidadeNome', '')} {x.get('numeroCompra', '')}/{x.get('anoCompra', '')}".strip(),
+            "valor": x.get("valorTotalEstimado"), "publicacao": x.get("dataPublicacaoPncp", ""),
+            "link": f"https://pncp.gov.br/app/editais/{m.group(1)}/{m.group(3)}/{int(m.group(2))}" if m else "https://pncp.gov.br"}
 
 
 # ------------------------------------------------- fonte 1: prefeitura de Caxias
@@ -227,10 +254,7 @@ def fonte_caxias():
         if enviados >= MAX_ENVIO:
             break  # o restante sai na próxima rodada
         enviar(msg(itens[lic_id]))
-        registrar({"id": f"CAXIAS-{lic_id}", "fonte": "Prefeitura de Caxias", "uf": "MA",
-                   "municipio": "Caxias", "ibge": "2103000", "orgao": "Prefeitura Municipal de Caxias",
-                   "objeto": itens[lic_id]["texto"][:400], "modalidade": "", "valor": None,
-                   "publicacao": "", "link": itens[lic_id]["link"]})
+        registrar(rec_caxias(lic_id, itens[lic_id]))
         vistos.add(lic_id)
         enviados += 1
         CAXIAS_ESTADO.write_text(json.dumps(sorted(vistos, key=int)))
@@ -245,10 +269,10 @@ PNCP_ESTADO = BASE / "vistos_pncp.json"
 PNCP_ERROS = {}  # uf -> último erro (para o modo teste explicar)
 
 
-def pncp_buscar():
+def pncp_buscar(dias=None):
     """Retorna (achados, falhas). achados: {id: licitação}; falhas: UFs com erro de consulta."""
     hoje = datetime.now(BRT).date()
-    ini = (hoje - timedelta(days=PNCP_DIAS - 1)).strftime("%Y%m%d")
+    ini = (hoje - timedelta(days=(dias or PNCP_DIAS) - 1)).strftime("%Y%m%d")
     fim = hoje.strftime("%Y%m%d")
     achados, falhas = {}, set()
     # gira a ordem dos estados a cada rodada, para nenhum ficar sempre por último
@@ -398,15 +422,7 @@ def fonte_pncp():
         except RuntimeError as e:
             print(f"[PNCP] envio interrompido ({limpar(e)}); o restante sai na próxima rodada.")
             break
-        org, uni = x.get("orgaoEntidade") or {}, x.get("unidadeOrgao") or {}
-        m = re.match(r"(\d{14})-\d-(\d+)/(\d{4})", cid)
-        registrar({"id": cid, "fonte": "PNCP", "uf": uni.get("ufSigla") or x.get("_uf", ""),
-                   "municipio": uni.get("municipioNome", ""), "ibge": str(uni.get("codigoIbge") or ""),
-                   "orgao": org.get("razaoSocial", ""),
-                   "objeto": re.sub(r"\s+", " ", x.get("objetoCompra") or "").strip()[:400],
-                   "modalidade": f"{x.get('modalidadeNome', '')} {x.get('numeroCompra', '')}/{x.get('anoCompra', '')}".strip(),
-                   "valor": x.get("valorTotalEstimado"), "publicacao": x.get("dataPublicacaoPncp", ""),
-                   "link": f"https://pncp.gov.br/app/editais/{m.group(1)}/{m.group(3)}/{int(m.group(2))}" if m else "https://pncp.gov.br"})
+        registrar(rec_pncp(x))
         ids[cid] = hoje.isoformat()
         enviados += 1
         salvar()
@@ -481,10 +497,39 @@ def fonte_famem():
     print(f"[FAMEM] {len(novas)} novas edições.")
 
 
+def retroativo(dias):
+    """Preenche o mapa com as licitações dos últimos N dias. NÃO envia nada ao Telegram
+    e NÃO altera o histórico de 'já vistos'."""
+    hoje = datetime.now(BRT).date()
+    corte = (hoje - timedelta(days=dias - 1)).isoformat()
+    novos = {"PNCP": 0, "Caxias": 0}
+    achados, falhas = pncp_buscar(dias)
+    for x in achados.values():
+        if passa_filtro(pncp_texto_busca(x)) and registrar(rec_pncp(x), quando=x.get("dataPublicacaoPncp") or None):
+            novos["PNCP"] += 1
+    try:
+        itens = caxias_lista()
+        for lic_id, it in itens.items():
+            d = caxias_data_publicacao(it)
+            if d and d >= corte and passa_filtro(it["texto"]):
+                if registrar(rec_caxias(lic_id, it), quando=d + "T00:00:00-03:00"):
+                    novos["Caxias"] += 1
+    except Exception as e:
+        print(f"[retro] Caxias falhou: {limpar(e)}")
+        falhas.add("Caxias")
+    print(f"[retro] últimos {dias} dias: {novos['PNCP']} do PNCP e {novos['Caxias']} de Caxias adicionadas ao mapa. "
+          f"Consultas com falha: {sorted(falhas) or 'nenhuma'}")
+    if falhas:
+        print("[retro] Algo falhou (provável limite do PNCP): rode de novo em alguns minutos; o que já entrou não duplica.")
+
+
 # ------------------------------------------------------------------------ main
 def main():
     if not TOKEN or not CHAT_IDS:
         sys.exit("Defina TELEGRAM_TOKEN e TELEGRAM_CHAT_ID.")
+    if RETRO:
+        retroativo(RETRO)
+        return
     erros = []
     for nome, fonte in (("Caxias", fonte_caxias), ("PNCP", fonte_pncp), ("FAMEM", fonte_famem)):
         try:
