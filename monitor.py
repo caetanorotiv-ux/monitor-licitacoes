@@ -38,7 +38,7 @@ PNCP_MODALIDADES = [int(m) for m in (os.environ.get("PNCP_MODALIDADES") or "4,5,
 PNCP_DIAS = int(os.environ.get("PNCP_DIAS") or 2)        # janela de publicação consultada
 # Fonte (sistema onde a licitação roda) aceita no PNCP. Padrão: Compras.gov.br e Portal de Compras Públicas.
 # Para receber de qualquer fonte, defina a variável PNCP_FONTES com o valor: todas
-FONTES_PADRAO = "compras.gov.br,comprasnet.gov.br,portal de compras publicas,portaldecompraspublicas"
+FONTES_PADRAO = "compras.gov.br,comprasnet.gov.br,portal de compras publicas,portaldecompraspublicas,ecustomize"
 _f = os.environ.get("PNCP_FONTES") or FONTES_PADRAO
 PNCP_FONTES = [] if sem_acento(_f) in ("todas", "todos", "*") else [sem_acento(t) for t in _f.split(",") if t.strip()]
 PNCP_INTERVALO = int(os.environ.get("PNCP_INTERVALO") or 0)  # minutos entre consultas ao PNCP (nas execuções agendadas)
