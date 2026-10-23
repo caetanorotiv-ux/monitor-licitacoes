@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mapa de Licitações do Nordeste</title>
+<meta name="description" content="Licitações recebidas pelo monitor, mapeadas por município no Nordeste e Tocantins. Atualiza sozinho.">
+<style>
+:root{
+  --bg:#f4f6f8; --panel:#ffffff; --ink:#18212b; --muted:#5d6b79; --line:#dde3e9;
+  --land:#e4eaf0; --land-hi:#cfe0f1; --border:#9fb0c1; --accent:#0b5cad;
+  --c-esportivo:#0072B2; --c-alimentos:#E69F00; --c-vestuario:#CC79A7; --c-outros:#6b7785;
+  --ok:#1a8f4c; --shadow:0 1px 3px rgba(20,30,40,.12);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#10161c; --panel:#18212a; --ink:#e7edf3; --muted:#9aa9b8; --line:#2a3744;
+    --land:#243242; --land-hi:#2d4560; --border:#4d6277; --accent:#5aa9f0;
+    --c-esportivo:#56B4E9; --c-alimentos:#F0B429; --c-vestuario:#E59BC4; --c-outros:#8c99a6;
+    --ok:#46c27d; --shadow:none;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent)}
+.wrap{max-width:1280px;margin:0 auto;padding:16px}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:8px 16px;margin-bottom:12px}
+h1{font-size:1.35rem;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:.85rem}
+.live{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:.85rem}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 var(--ok);animation:beat 2s infinite}
+.dot.off{background:#c0392b;animation:none}
+@keyframes beat{0%{box-shadow:0 0 0 0 rgba(26,143,76,.55)}70%{box-shadow:0 0 0 8px rgba(26,143,76,0)}100%{box-shadow:0 0 0 0 rgba(26,143,76,0)}}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;box-shadow:var(--shadow)}
+.stat b{display:block;font-size:1.35rem;line-height:1.15;font-variant-numeric:tabular-nums}
+.stat span{color:var(--muted);font-size:.78rem}
+.layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:12px;align-items:start}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.mapcard{padding:8px;position:relative}
+svg#mapa{width:100%;height:auto;max-height:78vh;display:block}
+.uf{fill:var(--land);stroke:var(--border);stroke-width:1.2;stroke-linejoin:round;cursor:pointer;transition:fill .15s}
+.uf:hover,.uf.sel{fill:var(--land-hi)}
+.uf.fora{fill:var(--land);opacity:.55}
+.uflabel{font-size:15px;font-weight:700;fill:var(--muted);text-anchor:middle;pointer-events:none;paint-order:stroke;stroke:var(--panel);stroke-width:3px}
+.ufcount{font-size:12px;font-weight:600;fill:var(--ink);text-anchor:middle;pointer-events:none;paint-order:stroke;stroke:var(--panel);stroke-width:3px}
+.bub{stroke:var(--panel);stroke-width:1.6;fill-opacity:.82;cursor:pointer;transition:fill-opacity .15s}
+.bub:hover,.bub.sel{fill-opacity:1;stroke:var(--ink);stroke-width:2}
+.pulse{fill:none;stroke-width:2.5;pointer-events:none;animation:pulse 1.8s ease-out infinite}
+@keyframes pulse{0%{r:6;opacity:.9}100%{r:48;opacity:0}}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;padding:6px 8px 2px;font-size:.8rem;color:var(--muted)}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--bg);padding:6px 9px;border-radius:7px;font-size:.8rem;max-width:230px;opacity:0;transition:opacity .1s;z-index:5}
+.side{display:flex;flex-direction:column;max-height:calc(78vh + 60px);min-height:420px}
+.toolbar{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chip{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:999px;padding:4px 10px;font:inherit;font-size:.8rem;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.chip i{width:9px;height:9px;border-radius:50%;display:inline-block}
+select{font:inherit;font-size:.8rem;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:8px;padding:4px 6px}
+.sel-info{padding:6px 12px;font-size:.82rem;color:var(--muted);border-bottom:1px solid var(--line);display:none}
+.sel-info button{margin-left:6px}
+.list{overflow:auto;flex:1;padding:4px 0}
+.item{padding:10px 12px;border-bottom:1px solid var(--line);position:relative}
+.item:last-child{border-bottom:0}
+.item.novo{animation:flash 3s ease-out}
+@keyframes flash{0%{background:rgba(230,159,0,.35)}100%{background:transparent}}
+.row1{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:.78rem;color:var(--muted)}
+.tag{display:inline-block;border-radius:5px;padding:0 6px;font-size:.72rem;font-weight:600;color:#fff}
+.obj{margin:3px 0 4px;font-size:.9rem;overflow-wrap:anywhere}
+.row2{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 10px;font-size:.78rem;color:var(--muted)}
+.empty{padding:28px 16px;text-align:center;color:var(--muted)}
+.empty b{display:block;color:var(--ink);margin-bottom:6px}
+button.link{background:none;border:0;color:var(--accent);font:inherit;cursor:pointer;padding:0;text-decoration:underline}
+.banner{background:#fff3cd;color:#5a4500;border:1px solid #ecd27a;border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:.85rem;display:none}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .banner{background:#3d3411;color:#f2dfa0;border-color:#6d5c1d}}
+.toast{position:fixed;left:50%;bottom:18px;transform:translate(-50%,20px);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:999px;box-shadow:0 4px 14px rgba(0,0,0,.3);opacity:0;transition:.25s;z-index:10;font-size:.88rem}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+footer{color:var(--muted);font-size:.78rem;margin-top:14px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:900px){
+  .layout{grid-template-columns:1fr}
+  .side{max-height:none}
+  .list{max-height:520px}
+  .stats{grid-template-columns:repeat(2,1fr)}
+}
+@media (prefers-reduced-motion: reduce){.dot,.pulse,.item.novo{animation:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Mapa de Licitações — Nordeste</h1>
+      <div class="sub">Cada ponto é um município com licitações enviadas ao grupo. Inclui o Tocantins, que o monitor também acompanha.</div>
+    </div>
+    <div class="live"><span class="dot" id="dot"></span><span id="atualizado">carregando…</span></div>
+  </header>
+
+  <div class="banner" id="banner"><b>Dados de exemplo.</b> Os pontos abaixo são fictícios, só para mostrar como o mapa fica. <button class="link" id="sairDemo">Voltar aos dados reais</button></div>
+
+  <section class="stats" aria-label="Resumo">
+    <div class="stat"><b id="sTotal">0</b><span>licitações</span></div>
+    <div class="stat"><b id="sMun">0</b><span>municípios</span></div>
+    <div class="stat"><b id="sUf">0</b><span>estados</span></div>
+    <div class="stat"><b id="sValor">—</b><span>valor estimado (onde informado)</span></div>
+  </section>
+
+  <div class="layout">
+    <section class="card mapcard">
+      <svg id="mapa" role="img" aria-label="Mapa do Nordeste e Tocantins com os municípios que têm licitações"></svg>
+      <div class="legend" id="legenda"></div>
+      <div class="tip" id="tip"></div>
+    </section>
+
+    <aside class="card side">
+      <div class="toolbar" id="toolbar">
+        <select id="periodo" aria-label="Período">
+          <option value="1">Últimas 24 h</option>
+          <option value="7">Últimos 7 dias</option>
+          <option value="30">Últimos 30 dias</option>
+          <option value="0" selected>Tudo</option>
+        </select>
+        <span id="chips"></span>
+      </div>
+      <div class="sel-info" id="selInfo"></div>
+      <div class="list" id="lista" aria-live="polite"></div>
+    </aside>
+  </div>
+
+  <footer>
+    A página consulta os dados a cada minuto e se atualiza sozinha. Os dados vêm do PNCP e do portal da Prefeitura de Caxias.
+    Posições aproximadas no centro do município. <span id="rodape"></span>
+  </footer>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+"use strict";
+/* ---------- configuração ---------- */
+const TEMAS = {
+  esportivo:{nome:"Materiais esportivos", cor:"var(--c-esportivo)"},
+  alimentos:{nome:"Gêneros alimentícios", cor:"var(--c-alimentos)"},
+  vestuario:{nome:"Fardamento / confecção", cor:"var(--c-vestuario)"},
+  outros:{nome:"Outros", cor:"var(--c-outros)"},
+};
+const POLL_MS = 60000;
+const LON0=-51.2, LON1=-34.4, LAT0=-18.6, LAT1=-0.6, S=60;
+const K=Math.cos(9.5*Math.PI/180);
+const proj=(lon,lat)=>[(lon-LON0)*K*S,(LAT1-lat)*S];
+const VBW=Math.round((LON1-LON0)*K*S), VBH=Math.round((LAT1-LAT0)*S);
+
+/* ---------- estado ---------- */
+const st={estados:null,muns:null,porNome:null,itens:[],vistos:new Set(),
+          periodo:0,temas:new Set(),selUF:null,selMun:null,demo:false,primeira:true,atualizado:null};
+const $=id=>document.getElementById(id);
+
+/* ---------- utilidades ---------- */
+const semAcento=t=>String(t||"").normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().trim();
+const fmtValor=v=>v==null||v===""||isNaN(+v)?null:(+v).toLocaleString("pt-BR",{style:"currency",currency:"BRL",maximumFractionDigits:0});
+function ago(iso){
+  if(!iso)return "";
+  const s=(Date.now()-new Date(iso).getTime())/1000;
+  if(s<90)return "agora há pouco";
+  if(s<3600)return `há ${Math.round(s/60)} min`;
+  if(s<86400)return `há ${Math.round(s/3600)} h`;
+  return `há ${Math.round(s/86400)} dia(s)`;
+}
+function el(tag,attrs={},...kids){
+  const e=document.createElementNS(attrs.svg?"http://www.w3.org/2000/svg":"http://www.w3.org/1999/xhtml",tag);
+  for(const [k,v] of Object.entries(attrs)){ if(k==="svg")continue; if(k==="text")e.textContent=v; else e.setAttribute(k,v); }
+  kids.forEach(k=>k&&e.append(k)); return e;
+}
+function linkSeguro(u){ try{const x=new URL(u); return /^https?:$/.test(x.protocol)?x.href:null;}catch{return null;} }
+const temaPrincipal=i=>(i.temas&&i.temas[0])||"outros";
+
+/* ---------- geocodificação ---------- */
+function posicao(i){
+  let m=st.muns[i.ibge];
+  if(!m) m=st.porNome[semAcento(i.municipio)+"|"+(i.uf||"")];
+  if(m) return {lat:m[0],lon:m[1],nome:m[2],uf:m[3],chave:"m"+(i.ibge||semAcento(m[2])+m[3])};
+  const f=st.estados.features.find(f=>f.properties.uf===i.uf); if(!f)return null;
+  const c=centroide(f); return {lat:c[1],lon:c[0],nome:i.municipio||"(município não identificado)",uf:i.uf,chave:"u"+i.uf,aprox:true};
+}
+function centroide(f){
+  let best=null,ba=-1;
+  for(const p of f.geometry.coordinates){const r=p[0];let a=0,sx=0,sy=0;
+    for(let k=0;k<r.length-1;k++){const c=r[k][0]*r[k+1][1]-r[k+1][0]*r[k][1];a+=c;sx+=(r[k][0]+r[k+1][0])*c;sy+=(r[k][1]+r[k+1][1])*c;}
+    a/=2; if(Math.abs(a)>ba){ba=Math.abs(a);best=[sx/(6*a),sy/(6*a)];}}
+  return best;
+}
+
+/* ---------- filtros ---------- */
+function filtrados(base=true){
+  const lim=st.periodo?Date.now()-st.periodo*86400000:0;
+  return st.itens.filter(i=>{
+    if(lim&&new Date(i.enviado||0).getTime()<lim)return false;
+    if(st.temas.size&&!st.temas.has(temaPrincipal(i))&&!(i.temas||[]).some(t=>st.temas.has(t)))return false;
+    return true;
+  });
+}
+
+/* ---------- desenho do mapa ---------- */
+function desenharBase(){
+  const svg=$("mapa"); svg.setAttribute("viewBox",`0 0 ${VBW} ${VBH}`);
+  svg.replaceChildren();
+  const g=el("g",{svg:1,id:"gUF"}); svg.append(g,el("g",{svg:1,id:"gLab"}),el("g",{svg:1,id:"gBub"}),el("g",{svg:1,id:"gPulse"}));
+  for(const f of st.estados.features){
+    let d="";
+    for(const p of f.geometry.coordinates){ p[0].forEach((pt,k)=>{const [x,y]=proj(pt[0],pt[1]); d+=(k?"L":"M")+x.toFixed(1)+","+y.toFixed(1);}); d+="Z"; }
+    const path=el("path",{svg:1,d,class:"uf","data-uf":f.properties.uf,tabindex:"0",role:"button","aria-label":f.properties.nome});
+    path.addEventListener("click",e=>{e.stopPropagation();selecionar(f.properties.uf,null);});
+    path.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();selecionar(f.properties.uf,null);}});
+    path.append(el("title",{svg:1,text:f.properties.nome}));
+    g.append(path);
+  }
+}
+function desenhar(){
+  const lista=filtrados();
+  const porMun=new Map(), porUF={};
+  for(const i of lista){
+    const p=posicao(i); if(!p)continue;
+    let m=porMun.get(p.chave); if(!m){m={...p,itens:[],cores:{}}; porMun.set(p.chave,m);}
+    m.itens.push(i); const t=temaPrincipal(i); m.cores[t]=(m.cores[t]||0)+1;
+    porUF[p.uf]=(porUF[p.uf]||0)+1;
+  }
+  // estados
+  document.querySelectorAll("#gUF .uf").forEach(p=>{
+    const uf=p.dataset.uf; p.classList.toggle("sel",st.selUF===uf);
+    p.classList.toggle("fora",!!st.selUF&&st.selUF!==uf);
+  });
+  const gl=$("gLab"); gl.replaceChildren();
+  for(const f of st.estados.features){
+    const uf=f.properties.uf,c=centroide(f),[x,y]=proj(c[0],c[1]);
+    gl.append(el("text",{svg:1,class:"uflabel",x:x.toFixed(0),y:(y-2).toFixed(0),text:uf}));
+    if(porUF[uf])gl.append(el("text",{svg:1,class:"ufcount",x:x.toFixed(0),y:(y+13).toFixed(0),text:porUF[uf]}));
+  }
+  // bolhas
+  const gb=$("gBub"),gp=$("gPulse"); gb.replaceChildren(); gp.replaceChildren();
+  const ms=[...porMun.values()].sort((a,b)=>b.itens.length-a.itens.length);
+  for(const m of ms){
+    const [x,y]=proj(m.lon,m.lat);
+    const dom=Object.entries(m.cores).sort((a,b)=>b[1]-a[1])[0][0];
+    const r=Math.min(26,6+4*Math.sqrt(m.itens.length));
+    const c=el("circle",{svg:1,class:"bub"+(st.selMun===m.chave?" sel":""),cx:x.toFixed(1),cy:y.toFixed(1),r:r.toFixed(1),
+      style:`fill:${TEMAS[dom].cor}`,tabindex:"0",role:"button","aria-label":`${m.nome}-${m.uf}: ${m.itens.length} licitação(ões)`});
+    c.addEventListener("click",e=>{e.stopPropagation();selecionar(m.uf,m.chave);});
+    c.addEventListener("keydown",e=>{if(e.key==="Enter"){selecionar(m.uf,m.chave);}});
+    c.addEventListener("mousemove",e=>tip(e,m)); c.addEventListener("mouseleave",()=>$("tip").style.opacity=0);
+    gb.append(c);
+    if(m.itens.some(i=>i._novo))gp.append(el("circle",{svg:1,class:"pulse",cx:x.toFixed(1),cy:y.toFixed(1),r:"6",style:"stroke:var(--c-alimentos)"}));
+  }
+  // resumo
+  let valor=0,temValor=false; lista.forEach(i=>{if(i.valor!=null&&!isNaN(+i.valor)){valor+=+i.valor;temValor=true;}});
+  $("sTotal").textContent=lista.length.toLocaleString("pt-BR");
+  $("sMun").textContent=[...porMun.values()].filter(m=>!m.aprox).length.toLocaleString("pt-BR");
+  $("sUf").textContent=Object.keys(porUF).length;
+  $("sValor").textContent=temValor?valor.toLocaleString("pt-BR",{style:"currency",currency:"BRL",notation:"compact",maximumFractionDigits:1}):"—";
+  desenharLista(lista,porMun);
+}
+function tip(e,m){
+  const t=$("tip"),box=$("mapa").parentElement.getBoundingClientRect();
+  t.textContent=`${m.nome}-${m.uf}: ${m.itens.length} licitação(ões)${m.aprox?" (local aproximado)":""}`;
+  t.style.left=Math.min(e.clientX-box.left+12,box.width-240)+"px"; t.style.top=(e.clientY-box.top+12)+"px"; t.style.opacity=1;
+}
+
+/* ---------- lista lateral ---------- */
+function desenharLista(lista,porMun){
+  const box=$("lista"); box.replaceChildren();
+  let ls=lista;
+  if(st.selUF)ls=ls.filter(i=>{const p=posicao(i);return p&&p.uf===st.selUF;});
+  if(st.selMun)ls=ls.filter(i=>{const p=posicao(i);return p&&p.chave===st.selMun;});
+  const info=$("selInfo");
+  if(st.selUF||st.selMun){
+    const nome=st.selMun&&porMun.get(st.selMun)?`${porMun.get(st.selMun).nome}-${st.selUF}`:st.selUF;
+    info.style.display="block"; info.replaceChildren(document.createTextNode(`Mostrando: ${nome} · ${ls.length} licitação(ões)`));
+    const b=el("button",{class:"link",type:"button",text:"limpar seleção"}); b.onclick=()=>selecionar(null,null); info.append(b);
+  } else info.style.display="none";
+  if(!ls.length){
+    box.append(vazio()); return;
+  }
+  const ord=[...ls].sort((a,b)=>String(b.enviado).localeCompare(String(a.enviado))).slice(0,60);
+  for(const i of ord){
+    const p=posicao(i)||{nome:i.municipio,uf:i.uf};
+    const tema=temaPrincipal(i);
+    const row1=el("div",{class:"row1"},
+      el("span",{class:"tag",style:`background:${TEMAS[tema].cor}`,text:TEMAS[tema].nome}),
+      el("span",{text:`${p.nome}-${p.uf}`}), el("span",{text:"· "+ago(i.enviado)}));
+    const obj=el("div",{class:"obj",text:i.objeto||"(sem descrição)"});
+    const v=fmtValor(i.valor); const href=linkSeguro(i.link);
+    const row2=el("div",{class:"row2"},
+      el("span",{text:[i.orgao,i.modalidade].filter(Boolean).join(" · ")}),
+      el("span",{},v?document.createTextNode(v+" · "):null,
+        href?Object.assign(el("a",{href,target:"_blank",rel:"noopener noreferrer",text:"abrir edital"})):document.createTextNode(i.fonte||"")));
+    const it=el("div",{class:"item"+(i._novo?" novo":"")},row1,obj,row2);
+    box.append(it);
+  }
+}
+function vazio(){
+  const d=el("div",{class:"empty"});
+  if(!st.itens.length){
+    d.append(el("b",{text:"Ainda não há licitações registradas."}),
+      document.createTextNode("O mapa começa a se preencher a partir da próxima licitação enviada ao grupo do Telegram. "));
+    const b=el("button",{class:"link",type:"button",text:"Ver um exemplo"}); b.onclick=()=>ligarDemo(); d.append(b);
+  } else d.append(el("b",{text:"Nada para mostrar com estes filtros."}),document.createTextNode("Tente outro período ou limpe a seleção."));
+  return d;
+}
+
+/* ---------- interações ---------- */
+function selecionar(uf,mun){
+  if(uf&&st.selUF===uf&&!mun&&!st.selMun){uf=null;}           // clicar de novo no estado desmarca
+  st.selUF=uf; st.selMun=mun; desenhar();
+}
+function montarChips(){
+  const box=$("chips"); box.replaceChildren();
+  for(const [k,t] of Object.entries(TEMAS)){
+    const b=el("button",{class:"chip",type:"button","aria-pressed":st.temas.has(k)},el("i",{style:`background:${t.cor}`}),document.createTextNode(t.nome));
+    b.onclick=()=>{st.temas.has(k)?st.temas.delete(k):st.temas.add(k); montarChips(); desenhar();};
+    box.append(b);
+  }
+  const lg=$("legenda"); lg.replaceChildren();
+  for(const t of Object.values(TEMAS)){ const s=el("span",{}); const i=el("i",{style:`background:${t.cor}`}); s.append(i,document.createTextNode(t.nome)); lg.append(s); }
+  lg.append(el("span",{text:"Tamanho do ponto = quantidade de licitações"}));
+}
+function aviso(msg){ const t=$("toast"); t.textContent=msg; t.classList.add("on"); clearTimeout(aviso.h); aviso.h=setTimeout(()=>t.classList.remove("on"),4500); }
+
+/* ---------- dados ---------- */
+function aplicarDados(json){
+  const itens=(json&&json.itens)||[];
+  const novos=[];
+  for(const i of itens){
+    if(!st.vistos.has(i.id)){
+      st.vistos.add(i.id);
+      const recente=Date.now()-new Date(i.enviado||0).getTime()<15*60000;
+      if(!st.primeira||recente){ i._novo=true; novos.push(i); }
+    }
+  }
+  st.itens=itens; st.atualizado=json&&json.atualizado;
+  if(novos.length&&!st.primeira)aviso(`${novos.length} nova(s) licitação(ões) no mapa`);
+  st.primeira=false;
+  desenhar();
+  $("atualizado").textContent=st.atualizado?`atualizado ${ago(st.atualizado)}`:"aguardando a primeira licitação";
+  if(novos.length)setTimeout(()=>{itens.forEach(i=>delete i._novo);desenhar();},30000);
+}
+async function carregar(){
+  if(st.demo)return;
+  try{
+    const r=await fetch("data.json?t="+Date.now(),{cache:"no-store"});
+    if(r.status===404){aplicarDados({itens:[]});$("dot").classList.remove("off");return;}
+    if(!r.ok)throw new Error(r.status);
+    aplicarDados(await r.json()); $("dot").classList.remove("off");
+  }catch(e){ $("dot").classList.add("off"); $("atualizado").textContent="sem conexão com os dados (tentando de novo)"; }
+}
+
+/* ---------- modo exemplo ---------- */
+function ligarDemo(){
+  st.demo=true; $("banner").style.display="block";
+  const ids=Object.keys(st.muns); let seed=7; const rnd=()=>(seed=(seed*16807)%2147483647)/2147483647;
+  const objs=[["esportivo","Aquisição de materiais esportivos para as escolas"],["alimentos","Gêneros alimentícios para merenda escolar"],
+    ["vestuario","Confecção de uniformes escolares"],["alimentos","Registro de preços de hortifrúti"],["esportivo","Bolas e redes para quadras poliesportivas"],["vestuario","Fardamento para agentes"]];
+  const itens=[]; const agora=Date.now();
+  for(let n=0;n<46;n++){
+    const id=ids[Math.floor(rnd()*ids.length)],m=st.muns[id],o=objs[Math.floor(rnd()*objs.length)];
+    itens.push({id:"demo"+n,fonte:"EXEMPLO",uf:m[3],municipio:m[2],ibge:id,orgao:"Órgão de exemplo",objeto:"[EXEMPLO] "+o[1],
+      modalidade:"Pregão "+(n+1)+"/2026",valor:Math.round(20000+rnd()*900000),publicacao:"",link:"",
+      enviado:new Date(agora-rnd()*6*86400000).toISOString(),temas:[o[0]]});
+  }
+  st.vistos=new Set(); st.primeira=true; aplicarDados({atualizado:new Date().toISOString(),itens});
+  $("atualizado").textContent="exemplo (dados fictícios)";
+}
+$("sairDemo").onclick=()=>{st.demo=false;$("banner").style.display="none";st.itens=[];st.vistos=new Set();st.primeira=true;history.replaceState(null,"",location.pathname);carregar();};
+
+/* ---------- início ---------- */
+(async function(){
+  try{
+    const [e,m]=await Promise.all([fetch("estados.json").then(r=>r.json()),fetch("municipios.json").then(r=>r.json())]);
+    st.estados=e; st.muns=m; st.porNome={};
+    for(const [id,v] of Object.entries(m)) st.porNome[semAcento(v[2])+"|"+v[3]]=v;
+  }catch(err){ $("atualizado").textContent="não foi possível carregar o mapa base"; $("dot").classList.add("off"); return; }
+  montarChips(); desenharBase();
+  $("periodo").onchange=ev=>{st.periodo=+ev.target.value;desenhar();};
+  $("mapa").addEventListener("click",()=>selecionar(null,null));
+  if(new URLSearchParams(location.search).get("demo")==="1"){ desenhar(); ligarDemo(); }
+  else { await carregar(); setInterval(carregar,POLL_MS); document.addEventListener("visibilitychange",()=>{if(!document.hidden)carregar();}); setInterval(()=>{if(st.atualizado&&!st.demo)$("atualizado").textContent=`atualizado ${ago(st.atualizado)}`;},30000); }
+})();
+</script>
+</body>
+</html>
