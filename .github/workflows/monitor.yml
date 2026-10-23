@@ -9,6 +9,10 @@ on:
         description: "Enviar a última licitação como exemplo (não altera o histórico)"
         type: boolean
         default: false
+      retroativo:
+        description: "Preencher o MAPA com os últimos N dias (ex.: 3). Não envia nada ao Telegram. Deixe 0 para o uso normal."
+        type: number
+        default: 0
 
 permissions:
   contents: write
@@ -34,6 +38,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           KEYWORDS: ${{ vars.KEYWORDS }}
           TESTE: ${{ inputs.teste && '1' || '' }}
+          MAPA_RETRO: ${{ inputs.retroativo }}
           PNCP_UF: ${{ vars.PNCP_UF }}
           PNCP_MODALIDADES: ${{ vars.PNCP_MODALIDADES }}
           PNCP_DIAS: ${{ vars.PNCP_DIAS }}
