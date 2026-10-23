@@ -36,6 +36,11 @@ PNCP_UFS = [u.strip().upper() for u in (os.environ.get("PNCP_UF") or "MA,TO,PI,C
 # 6 Pregão eletr., 7 Pregão pres., 8 Dispensa, 9 Inexigibilidade, 12 Credenciamento...
 PNCP_MODALIDADES = [int(m) for m in (os.environ.get("PNCP_MODALIDADES") or "4,5,6,7").split(",") if m.strip()]
 PNCP_DIAS = int(os.environ.get("PNCP_DIAS") or 2)        # janela de publicação consultada
+# Fonte (sistema onde a licitação roda) aceita no PNCP. Padrão: Compras.gov.br e Portal de Compras Públicas.
+# Para receber de qualquer fonte, defina a variável PNCP_FONTES com o valor: todas
+FONTES_PADRAO = "compras.gov.br,comprasnet.gov.br,portal de compras publicas,portaldecompraspublicas"
+_f = os.environ.get("PNCP_FONTES") or FONTES_PADRAO
+PNCP_FONTES = [] if sem_acento(_f) in ("todas", "todos", "*") else [sem_acento(t) for t in _f.split(",") if t.strip()]
 PNCP_INTERVALO = int(os.environ.get("PNCP_INTERVALO") or 0)  # minutos entre consultas ao PNCP (nas execuções agendadas)
 MAX_ENVIO = int(os.environ.get("MAX_ENVIO") or 15)       # limite de mensagens por rodada/fonte
 
@@ -196,6 +201,7 @@ def rec_pncp(x):
             "objeto": re.sub(r"\s+", " ", x.get("objetoCompra") or "").strip()[:400],
             "modalidade": f"{x.get('modalidadeNome', '')} {x.get('numeroCompra', '')}/{x.get('anoCompra', '')}".strip(),
             "valor": x.get("valorTotalEstimado"), "publicacao": x.get("dataPublicacaoPncp", ""),
+            "sistema": x.get("usuarioNome") or "",
             "link": f"https://pncp.gov.br/app/editais/{m.group(1)}/{m.group(3)}/{int(m.group(2))}" if m else "https://pncp.gov.br"}
 
 
@@ -318,6 +324,20 @@ def pncp_buscar(dias=None):
     return achados, falhas
 
 
+def passa_fonte(x):
+    """True se a licitação vem de uma das fontes aceitas (campo 'usuarioNome' do PNCP = 'Fonte' do site)."""
+    if not PNCP_FONTES:
+        return True
+    t = sem_acento(f"{x.get('usuarioNome') or ''} {x.get('linkSistemaOrigem') or ''}")
+    return any(f in t for f in PNCP_FONTES)
+
+
+def resumo_fontes(lista, n=8):
+    from collections import Counter
+    c = Counter((x.get("usuarioNome") or "(sem fonte)").strip() for x in lista)
+    return ", ".join(f"{k} ({v})" for k, v in c.most_common(n))
+
+
 def pncp_texto_busca(x):
     org = x.get("orgaoEntidade") or {}
     uni = x.get("unidadeOrgao") or {}
@@ -342,7 +362,8 @@ def pncp_msg(x, prefixo=""):
         f"📝 {objeto}\n\n"
         f"💰 {br_valor(x.get('valorTotalEstimado'))}\n"
         f"📅 Publicação: {br_data(x.get('dataPublicacaoPncp'))}\n"
-        f"⏰ Propostas: {br_data(x.get('dataAberturaProposta'))} até {br_data(x.get('dataEncerramentoProposta'))}\n\n"
+        f"⏰ Propostas: {br_data(x.get('dataAberturaProposta'))} até {br_data(x.get('dataEncerramentoProposta'))}\n"
+        f"🖥 Fonte: {x.get('usuarioNome') or '-'}\n\n"
         f"🔗 {link}"
     )
 
@@ -373,15 +394,18 @@ def fonte_pncp():
     if TESTE:
         sem = []
         for uf in PNCP_UFS:
-            do_uf = [x for x in ordenados if x["_uf"] == uf]
+            todas_uf = [x for x in ordenados if x["_uf"] == uf]
+            do_uf = [x for x in todas_uf if passa_fonte(x)]
             if do_uf:
                 enviar(pncp_msg(do_uf[-1], "🧪 TESTE - é assim que aparece:\n\n"))
             elif uf in falhas:
                 sem.append(f"{uf}: a consulta ao PNCP falhou ({PNCP_ERROS.get(uf, 'erro')})")
+            elif todas_uf:
+                sem.append(f"{uf}: {len(todas_uf)} licitações na janela, nenhuma das fontes aceitas")
             else:
                 sem.append(f"{uf}: nenhuma licitação nos últimos {PNCP_DIAS} dias nas modalidades {PNCP_MODALIDADES}")
-        if sem:
-            enviar("🧪 TESTE PNCP - estados sem exemplo:\n" + "\n".join(f"• {l}" for l in sem))
+        resumo = f"fontes aceitas: {', '.join(PNCP_FONTES) or 'todas'}\nfontes encontradas na janela: {resumo_fontes(ordenados) or 'nenhuma'}"
+        enviar("🧪 TESTE PNCP\n" + ("\n".join(f"• {l}" for l in sem) + "\n\n" if sem else "") + resumo)
         return
 
     if falhas and not achados:
@@ -412,7 +436,7 @@ def fonte_pncp():
              if x["_uf"] in estado["ufs"] and x["numeroControlePNCP"] not in ids]
     for x in novos:
         cid = x["numeroControlePNCP"]
-        if not passa_filtro(pncp_texto_busca(x)):
+        if not passa_fonte(x) or not passa_filtro(pncp_texto_busca(x)):
             ids[cid] = hoje.isoformat()
             continue
         if enviados >= MAX_ENVIO:
@@ -432,6 +456,8 @@ def fonte_pncp():
     estado["ids"] = {k: v for k, v in ids.items() if v >= limite}
     salvar()
     print(f"[PNCP] {len(novos)} novas, {enviados} enviadas. Falhas: {sorted(falhas) or 'nenhuma'}")
+    if novos:
+        print(f"[PNCP] fontes entre as novas: {resumo_fontes(novos)}")
 
 
 # ------------------------------------------- fonte 3: Diário Oficial dos Municípios (FAMEM)
@@ -505,7 +531,7 @@ def retroativo(dias):
     novos = {"PNCP": 0, "Caxias": 0}
     achados, falhas = pncp_buscar(dias)
     for x in achados.values():
-        if passa_filtro(pncp_texto_busca(x)) and registrar(rec_pncp(x), quando=x.get("dataPublicacaoPncp") or None):
+        if passa_fonte(x) and passa_filtro(pncp_texto_busca(x)) and registrar(rec_pncp(x), quando=x.get("dataPublicacaoPncp") or None):
             novos["PNCP"] += 1
     try:
         itens = caxias_lista()
