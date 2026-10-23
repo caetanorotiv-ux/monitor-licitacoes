@@ -135,6 +135,43 @@ def br_valor(v):
     return "R$ " + f"{float(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+# ------------------------------------------------------------ registro para o mapa
+MAPA_DADOS = BASE / "docs" / "data.json"
+MAPA_MAX = 3000          # no máximo N licitações guardadas
+MAPA_DIAS = 90           # e só as dos últimos N dias
+TEMAS = {                # tema -> palavras (sem acento); a página colore por tema
+    "esportivo": ["material esportivo", "materiais esportivos", "artigo esportivo", "artigos esportivos",
+                  "equipamento esportivo", "equipamentos esportivos", "bola", "futsal", "quimono", "trofeu", "medalha"],
+    "alimentos": ["genero alimenticio", "generos alimenticios", "alimentacao escolar", "merenda", "hortifruti",
+                  "cesta basica", "carne", "frango", "pescado", "leite", "arroz", "feijao", "macarrao",
+                  "biscoito", "farinha", "acucar", "ovos"],
+    "vestuario": ["confeccao", "fardamento", "uniforme", "camisa", "camiseta", "calca", "bermuda", "agasalho",
+                  "jaleco", "vestuario", "tecido", "calcado", "tenis"],
+}
+
+
+def temas_de(texto):
+    t = sem_acento(texto)
+    return [tema for tema, ps in TEMAS.items() if any(re.search(r"\b" + re.escape(p) + r"s?\b", t) for p in ps)]
+
+
+def registrar(rec):
+    """Guarda a licitação enviada em docs/data.json (alimenta a página do mapa)."""
+    try:
+        dados = ler_json(MAPA_DADOS, {"itens": []})
+        itens = [i for i in dados.get("itens", []) if i.get("id") != rec["id"]]
+        rec["enviado"] = datetime.now(BRT).isoformat(timespec="seconds")
+        rec["temas"] = temas_de(rec.get("objeto", ""))
+        itens.insert(0, rec)
+        limite = (datetime.now(BRT) - timedelta(days=MAPA_DIAS)).isoformat()
+        itens = [i for i in itens if i.get("enviado", "") >= limite][:MAPA_MAX]
+        MAPA_DADOS.parent.mkdir(exist_ok=True)
+        MAPA_DADOS.write_text(json.dumps({"atualizado": rec["enviado"], "itens": itens},
+                                         ensure_ascii=False, separators=(",", ":")))
+    except Exception as e:  # o mapa nunca pode derrubar o monitor
+        print(f"[mapa] não foi possível registrar: {limpar(e)}")
+
+
 # ------------------------------------------------- fonte 1: prefeitura de Caxias
 CAXIAS_URL = "https://transparencia.caxias.ma.gov.br/transparencia/licitacoes/processos"
 CAXIAS_ESTADO = BASE / "vistos.json"
@@ -190,6 +227,10 @@ def fonte_caxias():
         if enviados >= MAX_ENVIO:
             break  # o restante sai na próxima rodada
         enviar(msg(itens[lic_id]))
+        registrar({"id": f"CAXIAS-{lic_id}", "fonte": "Prefeitura de Caxias", "uf": "MA",
+                   "municipio": "Caxias", "ibge": "2103000", "orgao": "Prefeitura Municipal de Caxias",
+                   "objeto": itens[lic_id]["texto"][:400], "modalidade": "", "valor": None,
+                   "publicacao": "", "link": itens[lic_id]["link"]})
         vistos.add(lic_id)
         enviados += 1
         CAXIAS_ESTADO.write_text(json.dumps(sorted(vistos, key=int)))
@@ -357,6 +398,15 @@ def fonte_pncp():
         except RuntimeError as e:
             print(f"[PNCP] envio interrompido ({limpar(e)}); o restante sai na próxima rodada.")
             break
+        org, uni = x.get("orgaoEntidade") or {}, x.get("unidadeOrgao") or {}
+        m = re.match(r"(\d{14})-\d-(\d+)/(\d{4})", cid)
+        registrar({"id": cid, "fonte": "PNCP", "uf": uni.get("ufSigla") or x.get("_uf", ""),
+                   "municipio": uni.get("municipioNome", ""), "ibge": str(uni.get("codigoIbge") or ""),
+                   "orgao": org.get("razaoSocial", ""),
+                   "objeto": re.sub(r"\s+", " ", x.get("objetoCompra") or "").strip()[:400],
+                   "modalidade": f"{x.get('modalidadeNome', '')} {x.get('numeroCompra', '')}/{x.get('anoCompra', '')}".strip(),
+                   "valor": x.get("valorTotalEstimado"), "publicacao": x.get("dataPublicacaoPncp", ""),
+                   "link": f"https://pncp.gov.br/app/editais/{m.group(1)}/{m.group(3)}/{int(m.group(2))}" if m else "https://pncp.gov.br"})
         ids[cid] = hoje.isoformat()
         enviados += 1
         salvar()
@@ -368,12 +418,75 @@ def fonte_pncp():
     print(f"[PNCP] {len(novos)} novas, {enviados} enviadas. Falhas: {sorted(falhas) or 'nenhuma'}")
 
 
+# ------------------------------------------- fonte 3: Diário Oficial dos Municípios (FAMEM)
+# Lê SOMENTE a página inicial do site (pública). Não acessa os PDFs automaticamente.
+FAMEM_URL = "https://diariooficial.famem.org.br/"
+FAMEM_ESTADO = BASE / "vistos_famem.json"
+
+
+def famem_edicoes():
+    r = get_retry(FAMEM_URL)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    edicoes = {}
+    for a in soup.find_all("a", href=True):
+        texto = re.sub(r"\s+", " ", a.get_text(" ", strip=True))
+        m = re.search(r"N[ºo°]\.?\s*(\d{3,5})\s*/\s*(\d{4})", texto)
+        if not m:
+            # o número pode estar só no link do PDF (…edicao-3962-assinado.pdf)
+            m2 = re.search(r"edicao-(\d{3,5})", a["href"])
+            if not m2:
+                continue
+            num, ano = m2.group(1), str(datetime.now(BRT).year)
+        else:
+            num, ano = m.group(1), m.group(2)
+        d = re.search(r"\d{1,2} de [a-zç]+ de \d{4}", texto, re.I)
+        edicoes.setdefault(num, {"ano": ano, "data": d.group(0) if d else "",
+                                 "link": requests.compat.urljoin(FAMEM_URL, a["href"])})
+    return edicoes
+
+
+def famem_msg(num, e, prefixo=""):
+    data = f" - {e['data']}" if e["data"] else ""
+    return (f"{prefixo}📰 Nova edição do Diário Oficial dos Municípios (FAMEM-MA)\n\n"
+            f"Edição nº {num}/{e['ano']}{data}\n\n🔗 {e['link']}")
+
+
+def fonte_famem():
+    hora = datetime.now(BRT).hour
+    if not TESTE and not (6 <= hora < 22):  # diário sai em dias úteis; evita consultas de madrugada
+        return
+    edicoes = famem_edicoes()
+    if not edicoes:
+        raise RuntimeError("FAMEM: nenhuma edição encontrada (layout pode ter mudado).")
+    if TESTE:
+        num = max(edicoes, key=int)
+        enviar(famem_msg(num, edicoes[num], "🧪 TESTE - é assim que aparece:\n\n"))
+        return
+    if not FAMEM_ESTADO.exists():
+        FAMEM_ESTADO.write_text(json.dumps(sorted(edicoes, key=int)))
+        enviar("✅ Aviso do Diário Oficial dos Municípios (FAMEM) ativado. "
+               "Você receberá uma mensagem a cada nova edição.")
+        return
+    vistos = set(ler_json(FAMEM_ESTADO, []))
+    novas = [n for n in sorted(edicoes, key=int) if n not in vistos]
+    for n in novas[-5:]:  # no máximo as 5 mais recentes
+        enviar(famem_msg(n, edicoes[n]))
+        vistos.add(n)
+        FAMEM_ESTADO.write_text(json.dumps(sorted(vistos, key=int)[-60:]))
+        time.sleep(2)
+    if novas:
+        vistos |= set(novas)
+        FAMEM_ESTADO.write_text(json.dumps(sorted(vistos, key=int)[-60:]))
+    print(f"[FAMEM] {len(novas)} novas edições.")
+
+
 # ------------------------------------------------------------------------ main
 def main():
     if not TOKEN or not CHAT_IDS:
         sys.exit("Defina TELEGRAM_TOKEN e TELEGRAM_CHAT_ID.")
     erros = []
-    for nome, fonte in (("Caxias", fonte_caxias), ("PNCP", fonte_pncp)):
+    for nome, fonte in (("Caxias", fonte_caxias), ("PNCP", fonte_pncp), ("FAMEM", fonte_famem)):
         try:
             fonte()
         except Exception as e:  # uma fonte com problema não derruba a outra
