@@ -40,6 +40,7 @@ jobs:
           TESTE: ${{ inputs.teste && '1' || '' }}
           MAPA_RETRO: ${{ inputs.retroativo }}
           PNCP_UF: ${{ vars.PNCP_UF }}
+          PNCP_FONTES: ${{ vars.PNCP_FONTES }}
           PNCP_MODALIDADES: ${{ vars.PNCP_MODALIDADES }}
           PNCP_DIAS: ${{ vars.PNCP_DIAS }}
           PNCP_INTERVALO: ${{ vars.PNCP_INTERVALO }}
