@@ -201,7 +201,7 @@ def rec_pncp(x):
             "objeto": re.sub(r"\s+", " ", x.get("objetoCompra") or "").strip()[:400],
             "modalidade": f"{x.get('modalidadeNome', '')} {x.get('numeroCompra', '')}/{x.get('anoCompra', '')}".strip(),
             "valor": x.get("valorTotalEstimado"), "publicacao": x.get("dataPublicacaoPncp", ""),
-            "sistema": x.get("usuarioNome") or "",
+            "sistema": x.get("usuarioNome") or "", "origem": x.get("linkSistemaOrigem") or "",
             "link": f"https://pncp.gov.br/app/editais/{m.group(1)}/{m.group(3)}/{int(m.group(2))}" if m else "https://pncp.gov.br"}
 
 
@@ -529,6 +529,16 @@ def retroativo(dias):
     hoje = datetime.now(BRT).date()
     corte = (hoje - timedelta(days=dias - 1)).isoformat()
     novos = {"PNCP": 0, "Caxias": 0}
+    # limpeza: tira do mapa o que veio do PNCP de outra fonte (ou sem fonte registrada)
+    if PNCP_FONTES:
+        dados = ler_json(MAPA_DADOS, {"itens": []})
+        antes = dados.get("itens", [])
+        mantidos = [i for i in antes if i.get("fonte") != "PNCP" or passa_fonte(
+            {"usuarioNome": i.get("sistema"), "linkSistemaOrigem": i.get("origem")})]
+        if len(mantidos) != len(antes):
+            MAPA_DADOS.write_text(json.dumps({"atualizado": datetime.now(BRT).isoformat(timespec="seconds"),
+                                              "itens": mantidos}, ensure_ascii=False, separators=(",", ":")))
+        print(f"[retro] limpeza do mapa: {len(antes) - len(mantidos)} removidas, {len(mantidos)} mantidas.")
     achados, falhas = pncp_buscar(dias)
     for x in achados.values():
         if passa_fonte(x) and passa_filtro(pncp_texto_busca(x)) and registrar(rec_pncp(x), quando=x.get("dataPublicacaoPncp") or None):
